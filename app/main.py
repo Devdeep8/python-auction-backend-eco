@@ -5,7 +5,9 @@ from sanic.exceptions import InvalidUsage  , Unauthorized
 import httpx
 from pydantic import BaseModel, field_validator , Field
 from datetime import datetime
-from app.models.auction import Auction  # Import model
+from app.models.auction import Auction 
+from app.models.bid import Bid
+# Import model
 from app.db import init_db
 
  
@@ -62,7 +64,7 @@ async def validate_session(request: Request):
         async with httpx.AsyncClient() as client:
             try:
                 resp = await client.get(
-                    "https://ecokartuk.com/api/auth/session",
+                    "http://localhost:3000/api/auth/session",
                     cookies=cookies,
                     timeout=5,
                 )
@@ -162,6 +164,79 @@ async def get_auction_by_product_id(request: Request, product_id: str):
     except Exception as e:
         return await json_response(False, error=str(e), status=500)
     
+
+@app.route('/create-bid-by-user', methods=['POST'])
+async def create_bid(request: Request):
+    try:
+        data = request.json
+        
+        print(request.json)
+        # Validate required fields
+        if not all([data.get('auction_id'), data.get('bid_amount')]):
+            return await json_response(False, error="Missing required fields", status=400)
+
+        # Fetch auction with related data
+        auction = await Auction.filter(id=data['auction_id']).first()
+        print(auction , "dthdsifjsdlkfhj")
+        if not auction:
+            return await json_response(False, error="Auction not found", status=404)
+
+
+        # Check if auction is active
+        if auction.status != "active":
+            return await json_response(False, error="Auction is not active", status=400)
+
+        # Check if bid amount is valid
+        if data['bid_amount'] <= auction.starting_price:
+            return await json_response(False, error="Bid amount must be higher than starting price", status=400)
+        
+       
+        # Check for existing bid by user
+        existing_user_bid = await Bid.filter(
+            auction_id=data['auction_id'], 
+            user_id=request.ctx.user["id"]
+        ).exists()
+        if existing_user_bid:
+            return await json_response(False, error="A bid already exists for this auction by the user", status=400)
+
+        # Create bid
+        bid = await Bid.create(
+            auction=auction,  # Using ForeignKeyField
+            user_id=request.ctx.user["id"],
+            bid_amount=data['bid_amount'],
+            status="accepted",
+        )
+
+        # Update auction with new highest bid
+        update_data = {
+            'highest_bid_id': bid.id,
+            'highest_bid_amount': bid.bid_amount
+        }
+        await Auction.filter(id=data['auction_id']).update(**update_data)
+
+        return await json_response(
+            True,
+            {
+                "message": "Bid created successfully",
+                "data": {
+                    "id": bid.id,
+                    "auction_id": auction.id,
+                    "user_id": bid.user_id,
+                    "bid_amount": bid.bid_amount,
+                    "status": bid.status,
+                    "created_at": bid.created_at.isoformat(),
+                },
+            },
+            status=201,
+        )
+
+    
+    except ValueError as e:
+        return await json_response(False, error=str(e), status=400)
+    except Unauthorized as e:
+        return await json_response(False, error=str(e), status=401)
+    except Exception as e:
+        return await json_response(False, error=f"Unexpected error: {str(e)}", status=500)        
     
     
     
